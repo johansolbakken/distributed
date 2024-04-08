@@ -7,6 +7,8 @@ use hyper::service::service_fn;
 use hyper::StatusCode;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
+use once_cell::sync::Lazy;
+use tokio::sync::Mutex;
 
 use std::net::SocketAddr;
 
@@ -15,11 +17,31 @@ use tokio::net::TcpListener;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod node;
+
+// vector of nodes
+static NODES: Lazy<Mutex<Vec<node::Node>>> = Lazy::new(|| Mutex::new(Vec::new()));
+fn get_nodes() -> &'static Mutex<Vec<node::Node>> {
+    &NODES
+}
+
 async fn handler(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    match req.uri().path() {
-        "/" => return Ok(index()),
+    match (req.method(), req.uri().path()) {
+        (&hyper::Method::GET, "/") => {
+            return Ok(index().await);
+        }
+        (&hyper::Method::POST, "/node") => {
+            let mut nodes = get_nodes().lock().await;
+            let node = node::Node::new(
+                nodes.len().to_string(),
+                node::NodeRole::Leader,
+                vec!["tag1".to_string()],
+            );
+            nodes.push(node);
+            return Ok(Response::new(empty()));
+        }
         _ => {}
     }
 
@@ -28,7 +50,8 @@ async fn handler(
     Ok(not_found)
 }
 
-fn index() -> Response<BoxBody<Bytes, hyper::Error>> {
+async fn index() -> Response<BoxBody<Bytes, hyper::Error>> {
+    let nodes = get_nodes().lock().await;
     let body = r#"
         <!doctype html>
         <html>
@@ -36,8 +59,26 @@ fn index() -> Response<BoxBody<Bytes, hyper::Error>> {
             <title>Conductor</title>
         </head>
         <body>
-            <h1>Welcome to Conductor</h1>
-            <p>Conductor is a distributed network management system.</p>
+            <h1>Conductor</h1>
+            <ul>
+        "#
+    .to_string()
+        + &nodes
+            .iter()
+            .map(|node| {
+                format!(
+                    "<li>Node {} is a {:?} with tags {:?}</li>",
+                    node.id(),
+                    node.role(),
+                    node.tags()
+                )
+            })
+            .collect::<String>()
+        + r#"
+            </ul>
+            <form action="/node" method="post">
+                <button type="submit">Add Node</button>
+            </form>
         </body>
         </html>
     "#;
